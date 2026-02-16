@@ -10,11 +10,12 @@
 #include <Credentials.h>
 #include <Preferences.h>
 #include <MQTT_ha.h>
+#include <WebServer.h>
 
 // WiFi Einstellungen
 const char* hostname = "rocket";
 
-const char* firmware = "0.9.0";
+const char* firmware = "0.9.5";
 
 // MQTT Einstellungen
 const char* mqtt_server = "192.168.179.23"; //"iobroker.fritz.box";
@@ -37,7 +38,7 @@ const char* prefValueRefills = "refills";
 
 // Schwellwerte
 const float WATER_LEVEL_THRESHOLD = 10.0;     // Mindeständerung für MQTT Update in %
-const float REFILL_THRESHOLD = 50.0;         // Mindestanstieg für Auffüllerkennung in %
+const float REFILL_THRESHOLD = 30.0;         // Mindestanstieg für Auffüllerkennung in %
 const int REFILL_TIME_WINDOW = 10000;        // Zeitfenster für Auffüllerkennung in ms
 
 // Konfiguration für LED Ring
@@ -50,13 +51,16 @@ const int REFILL_TIME_WINDOW = 10000;        // Zeitfenster für Auffüllerkennu
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Definition der Wasserstands-Grenzen in mm
-#define WATER_FULL 45
-#define WATER_EMPTY 250
+#define WATER_FULL 50
+#define WATER_EMPTY 230
 #define SENSOR_OFFSET 0 //-35 // Offset in mm 
 
 VL53L0X sensor;
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
+
+// Webserver für Konfiguration
+WebServer server(80);
 
 // Globale Variablen für den letzten gemessenen Wasserstand
 float lastPublishedWaterLevel = -1;
@@ -71,6 +75,60 @@ bool isRefilling = false;
 
 // JSON Buffer für MQTT Nachrichten
 JsonDocument jsonDoc;
+
+// HTML für die Konfigurationsseite
+const char INDEX_HTML[] PROGMEM = R"=====(
+<!DOCTYPE HTML>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rocket WLAN Konfiguration</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; }
+        h1 { color: #333; text-align: center; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; }
+        button { background-color: #4CAF50; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; width: 100%; }
+        button:hover { background-color: #45a049; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background-color: #dff0d8; color: #3c763d; }
+        .error { background-color: #f2dede; color: #a94442; }
+        .info { background-color: #d9edf7; color: #31708f; }
+    </style>
+</head>
+<body>
+    <h1>Rocket WLAN Konfiguration</h1>
+    <div class="status info">
+        Verbinden Sie sich mit dem WLAN "Rocket-Config" um diese Seite zu erreichen.<br>
+        Aktuelle IP: %s
+    </div>
+    <form action="/save" method="POST">
+        <div class="form-group">
+            <label for="ssid">WLAN SSID:</label>
+            <input type="text" id="ssid" name="ssid" required>
+        </div>
+        <div class="form-group">
+            <label for="password">WLAN Passwort:</label>
+            <input type="password" id="password" name="password">
+        </div>
+        <button type="submit">Speichern und neu starten</button>
+    </form>
+    <div id="message" class="status" style="display: none;"></div>
+    <script>
+        // Zeige Statusmeldung wenn vorhanden
+        const urlParams = new URLSearchParams(window.location.search);
+        const message = urlParams.get('message');
+        const status = urlParams.get('status');
+        if (message) {
+            document.getElementById('message').style.display = 'block';
+            document.getElementById('message').innerHTML = message;
+            document.getElementById('message').className = 'status ' + status;
+        }
+    </script>
+</body>
+</html>
+)=====";
 
 void updateLEDRing(float waterLevel);
 void colorProgress(uint32_t color, int progress, int total);
@@ -115,6 +173,59 @@ void publishRefillCount() {
   preferences.begin(prefFile, false);
   preferences.putUInt(prefValueRefills, refillCount);
   preferences.end();
+}
+
+// Webserver Handler
+void handleRoot() {
+  char html[sizeof(INDEX_HTML) + 50];
+  sprintf(html, INDEX_HTML, WiFi.softAPIP().toString().c_str());
+  server.send(200, "text/html", html);
+}
+
+void handleSave() {
+  if (server.hasArg("ssid") && server.hasArg("password")) {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+    
+    // Speichere die Anmeldeinformationen in den Preferences
+    preferences.begin(prefFile, false);
+    preferences.putString("wifi_ssid", ssid);
+    preferences.putString("wifi_password", password);
+    preferences.end();
+    
+    // Sende Erfolgmeldung
+    String redirectUrl = "/?message=Einstellungen+gespeichert.+Das+Ger%C3%A4t+startet+neu...&status=success";
+    server.sendHeader("Location", redirectUrl);
+    server.send(303);
+    
+    delay(1000);
+    ESP.restart();
+  } else {
+    server.send(400, "text/plain", "Fehler: SSID und Passwort erforderlich");
+  }
+}
+
+void handleNotFound() {
+  String message = "Datei nicht gefunden\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+}
+
+void setupWebServer() {
+  server.on("/", handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  Serial.println("HTTP-Server gestartet");
 }
 
 bool connectMQTT() {
@@ -269,17 +380,58 @@ void setupOTA() {
 }
 
 void setupWiFi() {
+  // Versuche, gespeicherte Anmeldeinformationen zu laden
+  preferences.begin(prefFile, true); // Read-only Modus
+  String savedSsid = preferences.getString("wifi_ssid", "");
+  String savedPassword = preferences.getString("wifi_password", "");
+  preferences.end();
+  
+  const char* ssidToUse = savedSsid.length() > 0 ? savedSsid.c_str() : WIFI_ssid;
+  const char* passwordToUse = savedPassword.length() > 0 ? savedPassword.c_str() : WIFI_password;
+  
   WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
-  WiFi.begin(WIFI_ssid, WIFI_password);
+  WiFi.begin(ssidToUse, passwordToUse);
   
-  while (WiFi.status() != WL_CONNECTED) {
+  // Versuche, eine Verbindung zum konfigurierten WLAN herzustellen
+  int attempt = 0;
+  const int maxAttempts = 10;
+  
+  while (WiFi.status() != WL_CONNECTED && attempt < maxAttempts) {
     colorFill(strip.Color(0,0,0));
     colorWipe(strip.Color(255, 255, 0), 20);
+    attempt++;
+    delay(500);
   }
   
-  colorFill(strip.Color(0, 255, 0));
-  delay(500);
+  if (WiFi.status() == WL_CONNECTED) {
+    // Erfolgreich mit dem WLAN verbunden
+    colorFill(strip.Color(0, 255, 0));
+    delay(500);
+    Serial.println("Verbunden mit WLAN: " + String(ssidToUse));
+    Serial.println("IP-Adresse: " + WiFi.localIP().toString());
+  } else {
+    // Verbindung fehlgeschlagen, starte Access Point als Fallback
+    Serial.println("Verbindung zu WLAN fehlgeschlagen, starte Access Point...");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("Rocket-Config", "rocket123");
+    
+    // LED-Anzeige für Access Point Modus
+    colorFill(strip.Color(0, 0, 255));
+    delay(500);
+    colorFill(strip.Color(0, 0, 0));
+    delay(500);
+    colorFill(strip.Color(0, 0, 255));
+    
+    // Starte den Webserver für die Konfiguration
+    setupWebServer();
+    
+    Serial.println("Access Point gestartet");
+    Serial.println("SSID: Rocket-Config");
+    Serial.println("Passwort: rocket123");
+    Serial.println("IP-Adresse: " + WiFi.softAPIP().toString());
+    Serial.println("Öffnen Sie einen Browser und gehen Sie zu: http://" + WiFi.softAPIP().toString());
+  }
 }
 
 void setup() {
@@ -291,32 +443,41 @@ void setup() {
   strip.show();            // Turn OFF all pixels ASAP
   strip.setBrightness(50); // Set BRIGHTNESS to about 1/5 (max = 255)
 
-  // WiFi, OTA und MQTT Setup
+  // WiFi Setup
   setupWiFi();
-  setupOTA();
-  setupMQTT();
   
   // ToF Sensor initialisieren
   sensor.init();
   sensor.setTimeout(500);
   sensor.startContinuous(1000);
+  
+  // OTA und MQTT nur starten, wenn wir mit einem WLAN verbunden sind
+  if (WiFi.status() == WL_CONNECTED) {
+    setupOTA();
+    setupMQTT();
+  }
 }
 
 void loop() {
-  // OTA Update Handler
-  ArduinoOTA.handle();
-  
-  // MQTT Verbindung prüfen und ggf. wiederherstellen
-  if (!mqtt.connected()) {
-    unsigned long now = millis();
-    if (now - lastMqttReconnectAttempt > MQTT_RECONNECT_INTERVAL) {
-      lastMqttReconnectAttempt = now;
-      if (connectMQTT()) {
-        lastMqttReconnectAttempt = 0;
+  // OTA Update Handler (nur wenn mit WLAN verbunden)
+  if (WiFi.status() == WL_CONNECTED) {
+    ArduinoOTA.handle();
+    
+    // MQTT Verbindung prüfen und ggf. wiederherstellen
+    if (!mqtt.connected()) {
+      unsigned long now = millis();
+      if (now - lastMqttReconnectAttempt > MQTT_RECONNECT_INTERVAL) {
+        lastMqttReconnectAttempt = now;
+        if (connectMQTT()) {
+          lastMqttReconnectAttempt = 0;
+        }
       }
     }
+    mqtt.loop();
+  } else {
+    // Webserver bedienen, wenn wir im Access Point Modus sind
+    server.handleClient();
   }
-  mqtt.loop();
   
   // Wasserhöhe messen
   uint16_t distance = sensor.readRangeContinuousMillimeters();
@@ -335,8 +496,10 @@ void loop() {
   // Prüfen ob gerade aufgefüllt wird
   checkForRefill(waterLevel);
             
-  // MQTT Update
-  publishWaterLevel(waterLevel, distance);
+  // MQTT Update (nur wenn mit WLAN verbunden)
+  if (WiFi.status() == WL_CONNECTED) {
+    publishWaterLevel(waterLevel, distance);
+  }
   
   // LED Ring aktualisieren
   updateLEDRing(waterLevel);
