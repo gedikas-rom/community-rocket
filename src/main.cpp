@@ -15,7 +15,7 @@
 // WiFi Einstellungen
 const char* hostname = "rocket";
 
-const char* firmware = "0.9.5";
+const char* firmware = "0.9.6";
 
 // MQTT Einstellungen
 const char* mqtt_server = "192.168.179.23"; //"iobroker.fritz.box";
@@ -137,6 +137,7 @@ void colorWipe(uint32_t color, int wait);
 void colorFill(uint32_t color);
 void publishRefillCount();
 void publishJSONDoc();
+bool setupMDNS();
 
 // MQTT Callback für eingehende Nachrichten
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -379,6 +380,25 @@ void setupOTA() {
   ArduinoOTA.begin();
 }
 
+bool setupMDNS() {
+  if (!MDNS.begin(hostname)) {
+    Serial.println("mDNS Start fehlgeschlagen");
+    return false;
+  }
+
+  MDNS.setInstanceName(hostname);
+  MDNS.addService("http", "tcp", 80);
+  MDNS.addServiceTxt("http", "tcp", "fw", firmware);
+  MDNS.addServiceTxt("http", "tcp", "device", "waterlevel");
+
+  // Arduino OTA Service (Port 3232)
+  MDNS.addService("arduino", "tcp", 3232);
+  MDNS.addServiceTxt("arduino", "tcp", "fw", firmware);
+
+  Serial.println("mDNS gestartet: " + String(hostname) + ".local");
+  return true;
+}
+
 void setupWiFi() {
   // Versuche, gespeicherte Anmeldeinformationen zu laden
   preferences.begin(prefFile, true); // Read-only Modus
@@ -453,6 +473,7 @@ void setup() {
   
   // OTA und MQTT nur starten, wenn wir mit einem WLAN verbunden sind
   if (WiFi.status() == WL_CONNECTED) {
+    setupMDNS();
     setupOTA();
     setupMQTT();
   }
