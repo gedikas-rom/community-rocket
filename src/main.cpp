@@ -15,13 +15,11 @@
 // WiFi Einstellungen
 const char* hostname = "rocket";
 
-const char* firmware = "0.9.6";
+const char* firmware = "0.9.7"; // Firmware version
 
 // MQTT Einstellungen
-const char* mqtt_server = "192.168.179.23"; //"iobroker.fritz.box";
-const int mqtt_port = 1890;
-const char* mqtt_user = "";      // Optional
-const char* mqtt_password = "";  // Optional
+const char* mqtt_server = "192.168.179.21"; //"iobroker.fritz.box";
+const int mqtt_port = 1883;
 
 const char* mqtt_topic_watersum = "rocket/wasserstand";
 const char* mqtt_topic_water = "rocket/wasserstand/fuellstand";
@@ -241,8 +239,8 @@ bool connectMQTT() {
   
   // Verbindungsversuch mit Credentials
   bool connected = false;
-  if (mqtt_user && mqtt_password) {
-    connected = mqtt.connect(clientId.c_str(), mqtt_user, mqtt_password, 
+  if (MQTT_user[0] != '\0' && MQTT_password[0] != '\0') {
+    connected = mqtt.connect(clientId.c_str(), MQTT_user, MQTT_password, 
                            mqtt_topic_status, 1, true, "offline");
   } else {
     connected = mqtt.connect(clientId.c_str(), mqtt_topic_status, 1, true, "offline");
