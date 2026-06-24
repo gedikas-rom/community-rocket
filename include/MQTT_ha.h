@@ -10,6 +10,8 @@ std::string mqtt_topic_ha_distanz = std::string(mqtt_topic_ha_base) + "/sensor/k
 std::string mqtt_topic_ha_fuellstand = std::string(mqtt_topic_ha_base) + "/sensor/kaffeemaschine/fuellstand/config";
 std::string mqtt_topic_ha_command = std::string(mqtt_topic_ha_base) + "/button/kaffeemaschine/resetauffuellungen/config";
 std::string mqtt_topic_ha_firmware = std::string(mqtt_topic_ha_base) + "/sensor/kaffeemaschine/firmware/config";
+std::string mqtt_topic_ha_min_mm = std::string(mqtt_topic_ha_base) + "/number/kaffeemaschine/min_mm/config";
+std::string mqtt_topic_ha_max_mm = std::string(mqtt_topic_ha_base) + "/number/kaffeemaschine/max_mm/config";
 
 const char* mqtt_ha_config_auffuellungen = R"rawliteral({
   "device": {
@@ -137,4 +139,72 @@ const char* mqtt_ha_config_firmware = R"rawliteral({
   "state_topic": "rocket/wasserstand",
   "unique_id": "kaffeemaschine_firmware",
   "value_template": "{{ value_json.firmware }}"
+})rawliteral";
+
+const char* mqtt_ha_config_min_mm = R"rawliteral({
+  "availability": [
+    {
+      "topic": "rocket/wasserstand/status"
+    }
+  ],
+  "availability_mode": "all",
+  "device": {
+    "identifiers": [
+      "kaffeemaschine"
+    ],
+    "manufacturer": "Rocket",
+    "model": "Appartemento",
+    "name": "Kaffeemaschine"
+  },
+  "enabled_by_default": true,
+  "entity_category": "config",
+  "object_id": "kaffeemaschine_min_mm",
+  "origin": {
+    "name": "ESP32-C6",
+    "sw": "1.0.0",
+    "url": "https://wiki.seeedstudio.com/xiao_pin_multiplexing_esp33c6"
+  },
+  "name": "Kalibrierung voll",
+  "command_topic": "rocket/wasserstand/set/min_mm",
+  "state_topic": "rocket/wasserstand/min_mm",
+  "unique_id": "kaffeemaschine_min_mm",
+  "unit_of_measurement": "mm",
+  "mode": "box",
+  "min": 0,
+  "max": 2000,
+  "step": 1
+})rawliteral";
+
+const char* mqtt_ha_config_max_mm = R"rawliteral({
+  "availability": [
+    {
+      "topic": "rocket/wasserstand/status"
+    }
+  ],
+  "availability_mode": "all",
+  "device": {
+    "identifiers": [
+      "kaffeemaschine"
+    ],
+    "manufacturer": "Rocket",
+    "model": "Appartemento",
+    "name": "Kaffeemaschine"
+  },
+  "enabled_by_default": true,
+  "entity_category": "config",
+  "object_id": "kaffeemaschine_max_mm",
+  "origin": {
+    "name": "ESP32-C6",
+    "sw": "1.0.0",
+    "url": "https://wiki.seeedstudio.com/xiao_pin_multiplexing_esp33c6"
+  },
+  "name": "Kalibrierung leer",
+  "command_topic": "rocket/wasserstand/set/max_mm",
+  "state_topic": "rocket/wasserstand/max_mm",
+  "unique_id": "kaffeemaschine_max_mm",
+  "unit_of_measurement": "mm",
+  "mode": "box",
+  "min": 0,
+  "max": 2000,
+  "step": 1
 })rawliteral";

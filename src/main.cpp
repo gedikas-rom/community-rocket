@@ -15,7 +15,7 @@
 // WiFi Einstellungen
 const char* hostname = "rocket";
 
-const char* firmware = "0.9.7"; // Firmware version
+const char* firmware = "0.9.8"; // Firmware version
 
 // MQTT Einstellungen
 const char* mqtt_server = "192.168.179.21"; //"iobroker.fritz.box";
@@ -28,11 +28,17 @@ const char* mqtt_topic_status = "rocket/wasserstand/status";
 const char* mqtt_topic_refills = "rocket/wasserstand/auffuellungen";
 const char* mqtt_topic_command = "rocket/wasserstand/command";  // Eingehende Befehle
 const char* mqtt_topic_firmware = "rocket/wasserstand/firmware";  // aktuelle Firmware Version
+const char* mqtt_topic_min_mm = "rocket/wasserstand/min_mm";
+const char* mqtt_topic_max_mm = "rocket/wasserstand/max_mm";
+const char* mqtt_topic_set_min_mm = "rocket/wasserstand/set/min_mm";
+const char* mqtt_topic_set_max_mm = "rocket/wasserstand/set/max_mm";
 
 // Einstellungen
 Preferences preferences;
 const char* prefFile = "rocket";
 const char* prefValueRefills = "refills";
+const char* prefValueMinMm = "min_mm";
+const char* prefValueMaxMm = "max_mm";
 
 // Schwellwerte
 const float WATER_LEVEL_THRESHOLD = 10.0;     // Mindeständerung für MQTT Update in %
@@ -49,8 +55,9 @@ const int REFILL_TIME_WINDOW = 10000;        // Zeitfenster für Auffüllerkennu
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // Definition der Wasserstands-Grenzen in mm
-#define WATER_FULL 50
-#define WATER_EMPTY 230
+#define WATER_FULL_DEFAULT 50
+#define WATER_EMPTY_DEFAULT 230
+#define WATER_CALIBRATION_MAX_MM 2000
 #define SENSOR_OFFSET 0 //-35 // Offset in mm 
 
 VL53L0X sensor;
@@ -70,6 +77,8 @@ const unsigned long MQTT_RECONNECT_INTERVAL = 5000; // 5 Sekunden zwischen Recon
 // Zähler für Auffüllvorgänge
 uint32_t refillCount = 0;
 bool isRefilling = false;
+uint16_t waterMinMm = WATER_FULL_DEFAULT;
+uint16_t waterMaxMm = WATER_EMPTY_DEFAULT;
 
 // JSON Buffer für MQTT Nachrichten
 JsonDocument jsonDoc;
@@ -136,6 +145,10 @@ void colorFill(uint32_t color);
 void publishRefillCount();
 void publishJSONDoc();
 bool setupMDNS();
+void loadCalibration();
+void publishCalibration();
+void updateCalibration(uint16_t minMm, uint16_t maxMm);
+bool parseCalibrationValue(const String& value, uint16_t& result);
 
 // MQTT Callback für eingehende Nachrichten
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -153,7 +166,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       mqtt.publish(mqtt_topic_command, " ", true); // Command zurücksetzen nach der Verarbeitung
       Serial.println("Auffüllzähler zurückgesetzt");
     }
-  } 
+  } else if (String(topic) == mqtt_topic_set_min_mm) {
+    uint16_t minMm = 0;
+    if (parseCalibrationValue(command, minMm)) {
+      updateCalibration(minMm, waterMaxMm);
+    }
+  } else if (String(topic) == mqtt_topic_set_max_mm) {
+    uint16_t maxMm = 0;
+    if (parseCalibrationValue(command, maxMm)) {
+      updateCalibration(waterMinMm, maxMm);
+    }
+  }
 }
 
 void publishJSONDoc() {
@@ -172,6 +195,78 @@ void publishRefillCount() {
   preferences.begin(prefFile, false);
   preferences.putUInt(prefValueRefills, refillCount);
   preferences.end();
+}
+
+void loadCalibration() {
+  preferences.begin(prefFile, true);
+  waterMinMm = preferences.getUShort(prefValueMinMm, WATER_FULL_DEFAULT);
+  waterMaxMm = preferences.getUShort(prefValueMaxMm, WATER_EMPTY_DEFAULT);
+  preferences.end();
+
+  if (waterMinMm >= waterMaxMm) {
+    waterMinMm = WATER_FULL_DEFAULT;
+    waterMaxMm = WATER_EMPTY_DEFAULT;
+  }
+}
+
+void publishCalibration() {
+  if (!mqtt.connected()) {
+    return;
+  }
+
+  char minMmStr[8];
+  char maxMmStr[8];
+  itoa(waterMinMm, minMmStr, 10);
+  itoa(waterMaxMm, maxMmStr, 10);
+
+  mqtt.publish(mqtt_topic_min_mm, minMmStr, true);
+  mqtt.publish(mqtt_topic_max_mm, maxMmStr, true);
+  jsonDoc["min_mm"] = waterMinMm;
+  jsonDoc["max_mm"] = waterMaxMm;
+  publishJSONDoc();
+}
+
+void updateCalibration(uint16_t minMm, uint16_t maxMm) {
+  if (minMm >= maxMm) {
+    Serial.printf("Ungültige Kalibrierung ignoriert: min=%u max=%u\n", minMm, maxMm);
+    publishCalibration();
+    return;
+  }
+
+  waterMinMm = minMm;
+  waterMaxMm = maxMm;
+
+  preferences.begin(prefFile, false);
+  preferences.putUShort(prefValueMinMm, waterMinMm);
+  preferences.putUShort(prefValueMaxMm, waterMaxMm);
+  preferences.end();
+
+  lastPublishedWaterLevel = -1;
+  Serial.printf("Kalibrierung gespeichert: min=%u mm, max=%u mm\n", waterMinMm, waterMaxMm);
+  publishCalibration();
+}
+
+bool parseCalibrationValue(const String& value, uint16_t& result) {
+  String normalizedValue = value;
+  normalizedValue.trim();
+
+  if (normalizedValue.length() == 0) {
+    return false;
+  }
+
+  for (uint16_t i = 0; i < normalizedValue.length(); i++) {
+    if (!isDigit(normalizedValue[i])) {
+      return false;
+    }
+  }
+
+  const long parsedValue = normalizedValue.toInt();
+  if (parsedValue < 0 || parsedValue > WATER_CALIBRATION_MAX_MM) {
+    return false;
+  }
+
+  result = parsedValue;
+  return true;
 }
 
 // Webserver Handler
@@ -253,15 +348,19 @@ bool connectMQTT() {
     mqtt.publish(mqtt_topic_firmware, firmware, true);
     jsonDoc["firmware"] = firmware;
     mqtt.subscribe(mqtt_topic_command);
+    mqtt.subscribe(mqtt_topic_set_min_mm);
+    mqtt.subscribe(mqtt_topic_set_max_mm);
     
     // Setting Homeassistant sensor config
     Serial.println("--> HA Config");
-    mqtt.setBufferSize(800);
+    mqtt.setBufferSize(1200);
     Serial.println(mqtt.publish(mqtt_topic_ha_auffuellungen.c_str(), mqtt_ha_config_auffuellungen, true));
     Serial.println(mqtt.publish(mqtt_topic_ha_distanz.c_str(), mqtt_ha_config_distanz, true));
     Serial.println(mqtt.publish(mqtt_topic_ha_fuellstand.c_str(), mqtt_ha_config_fuellstand, true));
     Serial.println(mqtt.publish(mqtt_topic_ha_command.c_str(), mqtt_ha_config_command, true));
     Serial.println(mqtt.publish(mqtt_topic_ha_firmware.c_str(), mqtt_ha_config_firmware, true));
+    Serial.println(mqtt.publish(mqtt_topic_ha_min_mm.c_str(), mqtt_ha_config_min_mm, true));
+    Serial.println(mqtt.publish(mqtt_topic_ha_max_mm.c_str(), mqtt_ha_config_max_mm, true));
 
     // Gespeicherte Werte lesen, bspw. nach Neustart
     if (refillCount == 0)
@@ -272,6 +371,7 @@ bool connectMQTT() {
     }  
 
     publishRefillCount(); // Aktuellen Zählerstand senden
+    publishCalibration();
     return true;
   } else {
     Serial.print("fehlgeschlagen, rc=");
@@ -463,6 +563,7 @@ void setup() {
 
   // WiFi Setup
   setupWiFi();
+  loadCalibration();
   
   // ToF Sensor initialisieren
   sensor.init();
@@ -508,9 +609,9 @@ void loop() {
   }
   
   // Wasserhöhe in Prozent umrechnen
-  float waterLevel = map(constrain(distance, WATER_FULL, WATER_EMPTY),
-                        WATER_FULL, WATER_EMPTY,
-                        100, 0);
+  float constrainedDistance = constrain(distance, waterMinMm, waterMaxMm);
+  float waterLevel = 100.0f - ((constrainedDistance - waterMinMm) * 100.0f /
+                              (waterMaxMm - waterMinMm));
 
   // Prüfen ob gerade aufgefüllt wird
   checkForRefill(waterLevel);
